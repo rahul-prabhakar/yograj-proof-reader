@@ -1,0 +1,111 @@
+name: Release
+
+# Triggers when you push a tag like: git tag v0.2.0 && git push origin v0.2.0
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  release:
+    permissions:
+      contents: write   # needed to create the GitHub Release
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS — universal binary (Apple Silicon + Intel in one file)
+          - platform: macos-latest
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            args: --target universal-apple-darwin
+
+          # Linux
+          - platform: ubuntu-22.04
+            rust-targets: ''
+            args: ''
+
+          # Windows
+          - platform: windows-latest
+            rust-targets: ''
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Node.js ─────────────────────────────────────────────────────────
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # ── 3. Rust ────────────────────────────────────────────────────────────
+      - name: Setup Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - name: Cache Rust build artefacts
+        uses: swatinem/rust-cache@v2
+        with:
+          # The Tauri crate lives in frontend/src-tauri; its target dir is there too
+          workspaces: frontend/src-tauri -> target
+
+      # ── 4. Linux system dependencies ───────────────────────────────────────
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      # ── 5. Frontend dependencies ───────────────────────────────────────────
+      - name: Install frontend npm dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # ── 6. Build & release via tauri-action ────────────────────────────────
+      - name: Build and publish Tauri release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Optional: set these repo secrets for Tauri updater bundle signing.
+          # Leave unset if you don't use the updater feature.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Optional: macOS code-signing & notarisation.
+          # Leave unset to ship unsigned macOS builds.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          # Tauri project is in frontend/, not the repo root
+          projectPath: frontend
+          tagName: ${{ github.ref_name }}          # e.g. v0.2.0
+          releaseName: Kalash ${{ github.ref_name }}
+          releaseBody: |
+            ## योगराज प्रूफ रीडर — ${{ github.ref_name }}
+
+            Download the installer for your platform from the assets below.
+
+            | Platform | File |
+            |---|---|
+            | macOS (Universal) | `.dmg` |
+            | Linux | `.deb` / `.AppImage` |
+            | Windows | `.msi` / `.exe` |
+          releaseDraft: true    # review the draft before publishing
+          prerelease: false
+          args: ${{ matrix.args }}
+
